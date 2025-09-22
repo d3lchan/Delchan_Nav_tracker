@@ -1,6 +1,7 @@
 'use client';
 
-import { useMemo } from 'react';
+import { useMemo, useState } from 'react';
+import { motion } from 'framer-motion';
 import { GlassCard } from '@/components/ui/glass-card';
 import { useUserWorkouts } from '@/store';
 import { getAllMuscleGroups, getMuscleGroupCategory } from '@/lib/muscle-mapping';
@@ -10,6 +11,14 @@ interface BodyHeatMapProps {
   user: User;
   timeframe?: 'week' | 'month' | 'quarter' | 'all';
 }
+
+// Time range options
+const timeRangeOptions = [
+  { value: 'week', label: 'This Week', days: 7 },
+  { value: 'month', label: 'This Month', days: 30 },
+  { value: 'quarter', label: 'Last 3 Months', days: 90 },
+  { value: 'all', label: 'All Time', days: 365 }
+] as const;
 
 // Muscle group color intensity based on activity level
 function getIntensityColor(intensity: number): string {
@@ -29,64 +38,130 @@ function getTimeframeDays(timeframe: string): number {
   }
 }
 
-export function BodyHeatMap({ user, timeframe = 'month' }: BodyHeatMapProps) {
+export function BodyHeatMap({ user, timeframe: initialTimeframe = 'month' }: BodyHeatMapProps) {
   const workouts = useUserWorkouts(user);
+  const [selectedTimeframe, setSelectedTimeframe] = useState<'week' | 'month' | 'quarter' | 'all'>(initialTimeframe);
 
-  // Calculate muscle group activity
-  const muscleActivity = useMemo(() => {
-    const cutoffDate = new Date();
-    cutoffDate.setDate(cutoffDate.getDate() - getTimeframeDays(timeframe));
+  // Calculate muscle group activity for current and previous periods
+  const { muscleActivity, previousPeriodActivity, totalWorkouts } = useMemo(() => {
+    const currentPeriodDays = getTimeframeDays(selectedTimeframe);
+    const currentCutoffDate = new Date();
+    currentCutoffDate.setDate(currentCutoffDate.getDate() - currentPeriodDays);
+    
+    const previousCutoffDate = new Date();
+    previousCutoffDate.setDate(previousCutoffDate.getDate() - (currentPeriodDays * 2));
 
-    const recentWorkouts = workouts.filter(w => new Date(w.date) >= cutoffDate);
-    const activityCount: Record<string, number> = {};
-
-    // Initialize muscle group categories
-    const categories = ['chest', 'back', 'arms', 'shoulders', 'legs', 'core'];
-    categories.forEach(cat => {
-      activityCount[cat] = 0;
+    const currentWorkouts = workouts.filter(w => new Date(w.date) >= currentCutoffDate);
+    const previousWorkouts = workouts.filter(w => {
+      const date = new Date(w.date);
+      return date >= previousCutoffDate && date < currentCutoffDate;
     });
 
-    // Count muscle group usage based on exercise muscle groups
-    recentWorkouts.forEach(workout => {
-      workout.exercises.forEach(exercise => {
-        exercise.muscleGroups.forEach(muscle => {
-          const category = getMuscleGroupCategory(muscle);
-          activityCount[category] = (activityCount[category] || 0) + exercise.sets.length;
+    // Helper function to calculate activity for a set of workouts
+    const calculateActivity = (workoutSet: typeof workouts) => {
+      const activityCount: Record<string, number> = {};
+      const categories = ['chest', 'back', 'arms', 'shoulders', 'legs', 'core'];
+      categories.forEach(cat => {
+        activityCount[cat] = 0;
+      });
+
+      workoutSet.forEach(workout => {
+        workout.exercises.forEach(exercise => {
+          exercise.muscleGroups.forEach(muscle => {
+            const category = getMuscleGroupCategory(muscle);
+            activityCount[category] = (activityCount[category] || 0) + exercise.sets.length;
+          });
         });
       });
-    });
 
-    // Normalize to 0-1 scale
-    const maxActivity = Math.max(...Object.values(activityCount));
-    const normalized: Record<string, number> = {};
-    
-    Object.entries(activityCount).forEach(([muscle, count]) => {
-      normalized[muscle] = maxActivity > 0 ? count / maxActivity : 0;
-    });
+      // Normalize to 0-1 scale
+      const maxActivity = Math.max(...Object.values(activityCount));
+      const normalized: Record<string, number> = {};
+      
+      Object.entries(activityCount).forEach(([muscle, count]) => {
+        normalized[muscle] = maxActivity > 0 ? count / maxActivity : 0;
+      });
 
-    return normalized;
-  }, [workouts, timeframe]);
+      return normalized;
+    };
 
-  // Get top and bottom muscle groups
+    return {
+      muscleActivity: calculateActivity(currentWorkouts),
+      previousPeriodActivity: calculateActivity(previousWorkouts),
+      totalWorkouts: currentWorkouts.length
+    };
+  }, [workouts, selectedTimeframe]);
+
+  // Get top and bottom muscle groups with trend data
   const muscleStats = useMemo(() => {
     const sorted = Object.entries(muscleActivity)
-      .sort(([,a], [,b]) => b - a);
+      .map(([muscle, currentIntensity]) => {
+        const previousIntensity = previousPeriodActivity[muscle] || 0;
+        const trend = currentIntensity - previousIntensity;
+        return {
+          muscle,
+          currentIntensity,
+          previousIntensity,
+          trend,
+          trendPercent: previousIntensity > 0 ? ((trend / previousIntensity) * 100) : (currentIntensity > 0 ? 100 : 0)
+        };
+      })
+      .sort((a, b) => b.currentIntensity - a.currentIntensity);
     
     return {
       mostWorked: sorted.slice(0, 3),
       leastWorked: sorted.slice(-3).reverse()
     };
-  }, [muscleActivity]);
+  }, [muscleActivity, previousPeriodActivity]);
 
   return (
     <div className="space-y-6">
       <GlassCard className="p-6">
-        <div className="flex justify-between items-center mb-6">
+        <div className="flex flex-col sm:flex-row sm:justify-between sm:items-center mb-6 space-y-4 sm:space-y-0">
           <h3 className="text-lg font-semibold text-gray-900 dark:text-white">
             Muscle Group Activity Heatmap
           </h3>
-          <div className="text-sm text-gray-600 dark:text-gray-400">
-            Last {timeframe === 'week' ? '7 days' : timeframe === 'month' ? '30 days' : timeframe === 'quarter' ? '90 days' : 'year'}
+          
+          {/* Time Range Selector */}
+          <div className="flex flex-col sm:flex-row sm:items-center space-y-2 sm:space-y-0 sm:space-x-2">
+            <span className="text-sm text-gray-600 dark:text-gray-400 sm:mr-2">
+              Time Range:
+            </span>
+            <div className="flex bg-gray-100 dark:bg-gray-700 rounded-lg p-1 overflow-x-auto">
+              {timeRangeOptions.map((option) => (
+                <motion.button
+                  key={option.value}
+                  whileHover={{ scale: 1.02 }}
+                  whileTap={{ scale: 0.98 }}
+                  onClick={() => setSelectedTimeframe(option.value)}
+                  className={`flex-shrink-0 px-2 sm:px-3 py-1 text-xs font-medium rounded-md transition-all duration-200 ${
+                    selectedTimeframe === option.value
+                      ? 'bg-blue-500 text-white shadow-sm'
+                      : 'text-gray-600 dark:text-gray-300 hover:bg-gray-200 dark:hover:bg-gray-600'
+                  }`}
+                >
+                  {option.value === 'week' ? 'Week' : option.value === 'month' ? 'Month' : option.value === 'quarter' ? '3M' : 'All'}
+                </motion.button>
+              ))}
+            </div>
+          </div>
+        </div>
+
+        {/* Current Period Info */}
+        <div className="mb-4 p-3 bg-blue-50 dark:bg-blue-900/20 rounded-lg">
+          <div className="flex flex-col sm:flex-row sm:items-center sm:justify-between space-y-1 sm:space-y-0">
+            <div className="text-sm text-blue-700 dark:text-blue-300">
+              <span className="font-medium">
+                Showing activity for: {timeRangeOptions.find(opt => opt.value === selectedTimeframe)?.label}
+              </span>
+              <span className="ml-2 text-blue-600 dark:text-blue-400">
+                ({timeRangeOptions.find(opt => opt.value === selectedTimeframe)?.days} days)
+              </span>
+            </div>
+            <div className="text-sm text-blue-700 dark:text-blue-300">
+              <span className="font-medium">{totalWorkouts}</span> 
+              <span className="ml-1">workouts tracked</span>
+            </div>
           </div>
         </div>
 
@@ -275,24 +350,30 @@ export function BodyHeatMap({ user, timeframe = 'month' }: BodyHeatMapProps) {
             Most Worked Muscle Groups
           </h4>
           <div className="space-y-3">
-            {muscleStats.mostWorked.map(([muscle, intensity], index) => (
-              <div key={muscle} className="flex items-center justify-between">
+            {muscleStats.mostWorked.map((muscleData, index) => (
+              <div key={muscleData.muscle} className="flex items-center justify-between">
                 <div className="flex items-center space-x-3">
                   <div className="flex items-center justify-center w-6 h-6 rounded-full bg-green-500 text-white text-xs font-bold">
                     {index + 1}
                   </div>
                   <span className="text-sm font-medium text-gray-900 dark:text-white">
-                    {muscle.replace(/_/g, ' ').toLowerCase().replace(/\b\w/g, l => l.toUpperCase())}
+                    {muscleData.muscle.replace(/_/g, ' ').toLowerCase().replace(/\b\w/g, (l: string) => l.toUpperCase())}
                   </span>
                 </div>
                 <div className="flex items-center space-x-2">
                   <div 
                     className="w-8 h-2 rounded-full"
-                    style={{ backgroundColor: getIntensityColor(intensity) }}
+                    style={{ backgroundColor: getIntensityColor(muscleData.currentIntensity) }}
                   ></div>
                   <span className="text-xs text-gray-600 dark:text-gray-400 w-8 text-right">
-                    {(intensity * 100).toFixed(0)}%
+                    {(muscleData.currentIntensity * 100).toFixed(0)}%
                   </span>
+                  {/* Trend indicator */}
+                  {muscleData.trend !== 0 && (
+                    <span className={`text-xs ${muscleData.trend > 0 ? 'text-green-500' : 'text-red-500'}`}>
+                      {muscleData.trend > 0 ? '↑' : '↓'} {Math.abs(muscleData.trendPercent).toFixed(0)}%
+                    </span>
+                  )}
                 </div>
               </div>
             ))}
@@ -304,24 +385,30 @@ export function BodyHeatMap({ user, timeframe = 'month' }: BodyHeatMapProps) {
             Least Worked Muscle Groups
           </h4>
           <div className="space-y-3">
-            {muscleStats.leastWorked.map(([muscle, intensity], index) => (
-              <div key={muscle} className="flex items-center justify-between">
+            {muscleStats.leastWorked.map((muscleData, index) => (
+              <div key={muscleData.muscle} className="flex items-center justify-between">
                 <div className="flex items-center space-x-3">
                   <div className="flex items-center justify-center w-6 h-6 rounded-full bg-orange-500 text-white text-xs font-bold">
                     !
                   </div>
                   <span className="text-sm font-medium text-gray-900 dark:text-white">
-                    {muscle.replace(/_/g, ' ').toLowerCase().replace(/\b\w/g, l => l.toUpperCase())}
+                    {muscleData.muscle.replace(/_/g, ' ').toLowerCase().replace(/\b\w/g, (l: string) => l.toUpperCase())}
                   </span>
                 </div>
                 <div className="flex items-center space-x-2">
                   <div 
                     className="w-8 h-2 rounded-full"
-                    style={{ backgroundColor: getIntensityColor(intensity) }}
+                    style={{ backgroundColor: getIntensityColor(muscleData.currentIntensity) }}
                   ></div>
                   <span className="text-xs text-gray-600 dark:text-gray-400 w-8 text-right">
-                    {(intensity * 100).toFixed(0)}%
+                    {(muscleData.currentIntensity * 100).toFixed(0)}%
                   </span>
+                  {/* Trend indicator */}
+                  {muscleData.trend !== 0 && (
+                    <span className={`text-xs ${muscleData.trend > 0 ? 'text-green-500' : 'text-red-500'}`}>
+                      {muscleData.trend > 0 ? '↑' : '↓'} {Math.abs(muscleData.trendPercent).toFixed(0)}%
+                    </span>
+                  )}
                 </div>
               </div>
             ))}
