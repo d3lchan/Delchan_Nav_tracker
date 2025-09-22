@@ -3,6 +3,7 @@
 import { useRouter } from 'next/navigation';
 import { motion } from 'framer-motion';
 import { UserSelectionButton } from '@/components/ui/user-selection-button';
+import PWAInstaller from '@/components/pwa-installer';
 import { useAppStore } from '@/store';
 import type { User } from '@/types';
 
@@ -17,6 +18,7 @@ export default function Home() {
 
   return (
     <div className="min-h-screen flex items-center justify-center p-6 relative overflow-hidden bg-black">
+      <PWAInstaller />
       {/* Epic animated background */}
       <div className="absolute inset-0 overflow-hidden">
         {/* Dynamic gradient overlay */}
